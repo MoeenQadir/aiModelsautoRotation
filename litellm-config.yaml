@@ -1,0 +1,168 @@
+# ============================================================================
+# MOON AI AUTO ROUTER - LiteLLM configuration
+# ----------------------------------------------------------------------------
+# Logical groups: coding | reasoning | backup
+# OpenCode only ever sees these three names at http://127.0.0.1:4000/v1
+#
+# FREE-FIRST POLICY: every deployment below is a FREE tier endpoint.
+# No paid models are configured. Do not add paid models here unless you
+# explicitly want paid fallback.
+#
+# Model IDs verified live against provider APIs on 2026-09-30:
+#   - Cerebras : GET /v1/models -> gpt-oss-120b, qwen-3.8-27b
+#   - OpenRouter : GET /api/v1/models -> *:free slugs below (18 free models)
+#   - Gemini : gemini-flash-latest is a rolling alias Google maintains that
+#     always points at the current Flash model (no more dead model IDs).
+#   - GitHub Models : publisher-prefixed IDs via models.github.ai/inference
+#
+# When a provider deprecates a model: update ONLY this file, restart Docker.
+# OpenCode needs no changes.
+# ============================================================================
+
+model_list:
+  # ==========================================================================
+  # CODING GROUP
+  # Cerebras (free tier) -> OpenRouter free coding models
+  # Groq (key rotation) can be re-enabled by adding the two commented
+  # deployments below once GROQ_API_KEY_1 / GROQ_API_KEY_2 exist in .env
+  # ==========================================================================
+  - model_name: coding
+    litellm_params:
+      model: cerebras/gpt-oss-120b        # ~3000 tok/s, 65k ctx (free tier)
+      api_key: os.environ/CEREBRAS_API_KEY
+      additional_drop_params: ["reasoningSummary"]   # OpenCode-only param
+    model_info:
+      max_output_tokens: 32768            # clamp OpenCode's big max_tokens
+
+  # --- Groq (enabled: keys verified live 2026-10-01; model list checked
+  #     against the account's actual /openai/v1/models response) ------------
+  - model_name: coding
+    litellm_params:
+      model: groq/openai/gpt-oss-120b     # Groq flagship, ~500 tok/s, 131k ctx
+      api_key: os.environ/GROQ_API_KEY_1
+      additional_drop_params: ["reasoningSummary"]
+    model_info:
+      max_output_tokens: 65536
+  - model_name: coding
+    litellm_params:
+      model: groq/openai/gpt-oss-120b     # same model, second key = rotation
+      api_key: os.environ/GROQ_API_KEY_2
+      additional_drop_params: ["reasoningSummary"]
+    model_info:
+      max_output_tokens: 65536
+
+  - model_name: coding
+    litellm_params:
+      model: openrouter/qwen/qwen3.8-27b:free   # 262k ctx, tools+vision
+      api_key: os.environ/OPENROUTER_API_KEY
+      additional_drop_params: ["reasoningSummary"]
+      rpm: 15                              # OpenRouter free tier: 20 rpm
+    model_info:
+      max_output_tokens: 32768
+
+  - model_name: coding
+    litellm_params:
+      model: openrouter/nvidia/nemotron-3-ultra-550b-a55b:free
+      api_key: os.environ/OPENROUTER_API_KEY
+      additional_drop_params: ["reasoningSummary"]
+      rpm: 15
+    model_info:
+      max_output_tokens: 65536
+
+  # ==========================================================================
+  # REASONING GROUP
+  # Gemini (rolling alias, key verified live 2026-10-01) -> OpenRouter -> Cerebras
+  # ==========================================================================
+  - model_name: reasoning
+    litellm_params:
+      model: gemini/gemini-flash-latest    # rolling alias, always current
+      api_key: os.environ/GEMINI_API_KEY
+      additional_drop_params: ["reasoningSummary"]
+    model_info:
+      max_output_tokens: 65536
+
+  - model_name: reasoning
+    litellm_params:
+      model: openrouter/nvidia/nemotron-3-super-120b-a12b:free
+      api_key: os.environ/OPENROUTER_API_KEY
+      additional_drop_params: ["reasoningSummary"]
+      rpm: 15
+    model_info:
+      max_output_tokens: 65536
+
+  - model_name: reasoning
+    litellm_params:
+      model: cerebras/qwen-3.8-27b
+      api_key: os.environ/CEREBRAS_API_KEY
+      additional_drop_params: ["reasoningSummary"]
+    model_info:
+      max_output_tokens: 16384
+
+  # ==========================================================================
+  # BACKUP GROUP (last resort - no further fallbacks from here)
+  # GitHub Models (optional, free with PAT) -> OpenRouter
+  # NOTE: using the openai/ passthrough because LiteLLM's native github/
+  # handler throws connection errors in current images; the raw endpoint is
+  # OpenAI-compatible and verified working.
+  # ==========================================================================
+  # --- GitHub Models (commented out: endpoint currently returns a non-JSON
+  #     "OK" body for this token/network, verified with raw HTTP calls.
+  #     Re-enable by uncommenting once responses are proper JSON) ---
+  # - model_name: backup
+  #   litellm_params:
+  #     model: openai/openai/gpt-4o-mini     # -> model "openai/gpt-4o-mini"
+  #     api_base: https://models.github.ai/inference
+  #     api_key: os.environ/GITHUB_TOKEN
+  #     additional_drop_params: ["reasoningSummary"]
+  #   model_info:
+  #     max_output_tokens: 16384
+
+  # --- Gemini (re-enabled: new key verified live 2026-10-01) ---------------
+  - model_name: backup
+    litellm_params:
+      model: gemini/gemini-flash-latest
+      api_key: os.environ/GEMINI_API_KEY
+      additional_drop_params: ["reasoningSummary"]
+    model_info:
+      max_output_tokens: 16384
+
+  - model_name: backup
+    litellm_params:
+      model: openrouter/cohere/north-mini-code:free
+      api_key: os.environ/OPENROUTER_API_KEY
+      additional_drop_params: ["reasoningSummary"]
+      rpm: 15
+    model_info:
+      max_output_tokens: 16384
+
+# ============================================================================
+# ROUTER & FAILOVER SETTINGS
+# ============================================================================
+router_settings:
+  # Enforce context-window pre-call checks (docs: required for enforcement)
+  enable_pre_call_checks: true
+  # Retry once per deployment before moving on - fail FAST to the next one
+  num_retries: 1
+  # Cooldown a deployment after 2 failures for 5 minutes. This is what stops
+  # the router from hammering a dead/rate-limited provider (spec section 14).
+  allowed_fails: 2
+  cooldown_time: 300
+  # Failover chains. "backup" has NO fallbacks on purpose - it is the end
+  # of the line; falling back from it would create infinite loops.
+  fallbacks:
+    - coding: ["reasoning", "backup"]
+    - reasoning: ["backup"]
+  # If a context window is exceeded, try the bigger-context reasoning models
+  context_window_fallbacks:
+    - coding: ["reasoning", "backup"]
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+
+litellm_settings:
+  # Drop any other params a provider does not support instead of erroring
+  drop_params: true
+  # Per-request timeout in seconds
+  request_timeout: 120
+  # Never print keys/headers in logs
+  set_verbose: false
