@@ -4,16 +4,32 @@
 # Logical groups: coding | reasoning | backup
 # OpenCode only ever sees these three names at http://127.0.0.1:4000/v1
 #
-# FREE-FIRST POLICY: every deployment below is a FREE tier endpoint.
-# No paid models are configured. Do not add paid models here unless you
-# explicitly want paid fallback.
+# FREE-FIRST POLICY: every ACTIVE deployment below is a FREE tier endpoint.
+# No paid models are configured. The single PAID exception (OpenRouter
+# deepseek-chat) sits at the very end of the coding chain, also commented.
 #
-# Model IDs verified live against provider APIs on 2026-09-30:
-#   - Cerebras : GET /v1/models -> gpt-oss-120b, qwen-3.8-27b
-#   - OpenRouter : GET /api/v1/models -> *:free slugs below (18 free models)
-#   - Gemini : gemini-flash-latest is a rolling alias Google maintains that
-#     always points at the current Flash model (no more dead model IDs).
-#   - GitHub Models : publisher-prefixed IDs via models.github.ai/inference
+# KEY STATUS (verified live 2026-10-03):
+#   ACTIVE  : Groq x2, Cerebras, Gemini, OpenRouter, Mistral, Cloudflare
+#   PARKED  : SambaNova (valid key, account lacks payment method - 402)
+#   PENDING : Together, Fireworks, NVIDIA, Qwen (commented NEEDS blocks),
+#             GitHub Models (blocked upstream), paid deepseek (commented)
+#
+# Model IDs verified live against provider APIs on 2026-10-03:
+#   - Cerebras   : GET /v1/models -> gpt-oss-120b, qwen-3.8-27b
+#                  (llama-3.3-70b is GONE from Cerebras — do not re-add)
+#   - Groq       : GET /openai/v1/models -> openai/gpt-oss-120b,
+#                  qwen/qwen3.8-27b (llama-3.3-70b-versatile is GONE)
+#   - OpenRouter : GET /api/v1/models -> the :free slugs below (17 free models
+#                  today; deepseek :free variants are GONE — deepseek-chat is
+#                  paid on OpenRouter now)
+#   - Gemini     : gemini-flash-latest is a rolling alias Google maintains that
+#                  always points at the current Flash model (no dead model IDs).
+#   - GitHub Models : https://models.github.ai/inference still returns a
+#                  non-JSON "OK" body for this token (re-checked 2026-10-03),
+#                  so that block stays commented out.
+#
+# PRIORITY: within each group the router tries deployments top-to-bottom,
+# so the strongest/fastest models sit at the top (spec: best-first).
 #
 # When a provider deprecates a model: update ONLY this file, restart Docker.
 # OpenCode needs no changes.
@@ -21,28 +37,27 @@
 
 model_list:
   # ==========================================================================
-  # CODING GROUP
-  # Cerebras (free tier) -> OpenRouter free coding models
-  # Groq (key rotation) can be re-enabled by adding the two commented
-  # deployments below once GROQ_API_KEY_1 / GROQ_API_KEY_2 exist in .env
+  # CODING GROUP  (chain: coding -> reasoning -> backup)
+  # 1-2. Groq gpt-oss-120b (key #1 -> key #2 rotation)
+  # 3.  Groq qwen3.8-27b
+  # 4.  Cerebras gpt-oss-120b
+  # 5.  Mistral codestral-latest (ACTIVE 2026-10-03)
+  # 6.  Cloudflare llama-3.3-70b-fp8-fast (ACTIVE 2026-10-03)
+  #       (SambaNova parked: key valid but account needs a payment method
+  #       on file at cloud.sambanova.ai/plans/billing before inference;
+  #       Together / Fireworks / NVIDIA / Qwen stay commented pending keys)
+  # 8.  OpenRouter qwen3.8-27b:free
+  # 9.  OpenRouter nemotron-3-ultra:free
+  # 10. (PAID, commented) OpenRouter deepseek/deepseek-chat — last resort
   # ==========================================================================
-  - model_name: coding
-    litellm_params:
-      model: cerebras/gpt-oss-120b        # ~3000 tok/s, 65k ctx (free tier)
-      api_key: os.environ/CEREBRAS_API_KEY
-      additional_drop_params: ["reasoningSummary"]   # OpenCode-only param
-    model_info:
-      max_output_tokens: 32768            # clamp OpenCode's big max_tokens
-
-  # --- Groq (enabled: keys verified live 2026-10-01; model list checked
-  #     against the account's actual /openai/v1/models response) ------------
   - model_name: coding
     litellm_params:
       model: groq/openai/gpt-oss-120b     # Groq flagship, ~500 tok/s, 131k ctx
       api_key: os.environ/GROQ_API_KEY_1
-      additional_drop_params: ["reasoningSummary"]
+      additional_drop_params: ["reasoningSummary"]   # OpenCode-only param
     model_info:
-      max_output_tokens: 65536
+      max_output_tokens: 65536            # clamp OpenCode's big max_tokens
+
   - model_name: coding
     litellm_params:
       model: groq/openai/gpt-oss-120b     # same model, second key = rotation
@@ -50,6 +65,111 @@ model_list:
       additional_drop_params: ["reasoningSummary"]
     model_info:
       max_output_tokens: 65536
+
+  # --- NEW: Groq qwen3.8-27b (verified in the account's /openai/v1/models
+  #     response on 2026-10-03; same weights as the OpenRouter free tier but
+  #     on your own Groq quota, and faster) ---
+  - model_name: coding
+    litellm_params:
+      model: groq/qwen/qwen3.8-27b
+      api_key: os.environ/GROQ_API_KEY_1
+      additional_drop_params: ["reasoningSummary"]
+    model_info:
+      max_output_tokens: 32768
+
+  - model_name: coding
+    litellm_params:
+      model: cerebras/gpt-oss-120b        # ~3000 tok/s, 65k ctx (free tier)
+      api_key: os.environ/CEREBRAS_API_KEY
+      additional_drop_params: ["reasoningSummary"]
+    model_info:
+      max_output_tokens: 32768
+
+  # --- Mistral Codestral (ACTIVE 2026-10-03: key verified live and
+  #     codestral-latest present in the account's /v1/models response).
+  #     Dedicated code model, 256k ctx, near the top for coding requests. ---
+  - model_name: coding
+    litellm_params:
+      model: mistral/codestral-latest
+      api_key: os.environ/MISTRAL_API_KEY
+      additional_drop_params: ["reasoningSummary"]
+      rpm: 20
+    model_info:
+      max_output_tokens: 16384
+
+  # --- SambaNova (PARKED 2026-10-03: API key verified valid, account
+  #     model list OK, but inference returns HTTP 402 PAYMENT_METHOD_REQUIRED.
+  #     SambaNova now requires a payment method on file for the account:
+  #     add one at https://cloud.sambanova.ai/plans/billing (free tier is not
+  #     charged), then uncomment this block. ---
+  # - model_name: coding
+  #   litellm_params:
+  #     model: sambanova/Meta-Llama-3.3-70B-Instruct
+  #     api_key: os.environ/SAMBANOVA_API_KEY
+  #     additional_drop_params: ["reasoningSummary"]
+  #     rpm: 10
+  #   model_info:
+  #     max_output_tokens: 8192
+
+  # --- NEEDS: TOGETHER_API_KEY  (api.together.ai — free tier endpoints).
+  #     Using the "-Turbo-Free" free-serving variant; drop "-Free" for the
+  #     paid Turbo endpoint. ---
+  # - model_name: coding
+  #   litellm_params:
+  #     model: together_ai/meta-llama/Llama-3.3-70B-Instruct-Turbo-Free
+  #     api_key: os.environ/TOGETHER_API_KEY
+  #     additional_drop_params: ["reasoningSummary"]
+  #     rpm: 15
+  #   model_info:
+  #     max_output_tokens: 8192
+
+  # --- NEEDS: FIREWORKS_API_KEY  (fireworks.ai — free trial credits).
+  #     Full model path is required by the Fireworks API. ---
+  # - model_name: coding
+  #   litellm_params:
+  #     model: fireworks_ai/accounts/fireworks/models/llama-v3p1-70b-instruct
+  #     api_key: os.environ/FIREWORKS_API_KEY
+  #     additional_drop_params: ["reasoningSummary"]
+  #     rpm: 15
+  #   model_info:
+  #     max_output_tokens: 16384
+
+  # --- NEEDS: NVIDIA_API_KEY  (build.nvidia.com — free developer tier).
+  #     Route: nvidia_nim/ against integrate.api.nvidia.com. ---
+  # - model_name: coding
+  #   litellm_params:
+  #     model: nvidia_nim/meta/llama-3.1-70b-instruct
+  #     api_base: https://integrate.api.nvidia.com/v1
+  #     api_key: os.environ/NVIDIA_API_KEY
+  #     additional_drop_params: ["reasoningSummary"]
+  #     rpm: 30
+  #   model_info:
+  #     max_output_tokens: 8192
+
+  # --- Cloudflare Workers AI (ACTIVE 2026-10-03: API key + account ID
+  #     verified live, target model present in ai/models/search).
+  #     LiteLLM builds the endpoint from CLOUDFLARE_ACCOUNT_ID. ---
+  - model_name: coding
+    litellm_params:
+      model: cloudflare/@cf/meta/llama-3.3-70b-instruct-fp8-fast
+      api_key: os.environ/CLOUDFLARE_API_KEY
+      additional_drop_params: ["reasoningSummary"]
+      rpm: 15
+    model_info:
+      max_output_tokens: 8192
+
+  # --- NEEDS: QWEN_API_KEY  (bailian.console.alibabacloud.com — DashScope
+  #     international, free quota). Routed as OpenAI-compatible passthrough
+  #     to DashScope's compatible-mode endpoint (most robust route). ---
+  # - model_name: coding
+  #   litellm_params:
+  #     model: openai/qwen2.5-coder-32b-instruct
+  #     api_base: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+  #     api_key: os.environ/QWEN_API_KEY
+  #     additional_drop_params: ["reasoningSummary"]
+  #     rpm: 15
+  #   model_info:
+  #     max_output_tokens: 8192
 
   - model_name: coding
     litellm_params:
@@ -69,8 +189,20 @@ model_list:
     model_info:
       max_output_tokens: 65536
 
+  # --- PAID (commented): deepseek :free variants are gone from OpenRouter;
+  #     "deepseek-chat" now bills OpenRouter credits. The user's requested
+  #     model is kept as the FINAL coding fallback. Requires credits at
+  #     openrouter.ai/credits. ---
+  # - model_name: coding
+  #   litellm_params:
+  #     model: openrouter/deepseek/deepseek-chat
+  #     api_key: os.environ/OPENROUTER_API_KEY
+  #     additional_drop_params: ["reasoningSummary"]
+  #   model_info:
+  #     max_output_tokens: 8192
+
   # ==========================================================================
-  # REASONING GROUP
+  # REASONING GROUP  (chain: reasoning -> backup)
   # Gemini (rolling alias, key verified live 2026-10-01) -> OpenRouter -> Cerebras
   # ==========================================================================
   - model_name: reasoning
@@ -100,13 +232,14 @@ model_list:
 
   # ==========================================================================
   # BACKUP GROUP (last resort - no further fallbacks from here)
-  # GitHub Models (optional, free with PAT) -> OpenRouter
-  # NOTE: using the openai/ passthrough because LiteLLM's native github/
-  # handler throws connection errors in current images; the raw endpoint is
-  # OpenAI-compatible and verified working.
+  # Gemini rolling alias -> explicit Gemini 2.0 Flash (NEW, second deployment
+  # on the same free key) -> OpenRouter -> GitHub Models (pending)
+  # NOTE: GitHub Models goes through the openai/ passthrough because LiteLLM's
+  # native github/ handler throws connection errors in current images; the raw
+  # endpoint is OpenAI-compatible.
   # ==========================================================================
-  # --- GitHub Models (commented out: endpoint currently returns a non-JSON
-  #     "OK" body for this token/network, verified with raw HTTP calls.
+  # --- GitHub Models (commented out: endpoint STILL returns a non-JSON "OK"
+  #     body for this token/network, re-verified with raw HTTP 2026-10-03.
   #     Re-enable by uncommenting once responses are proper JSON) ---
   # - model_name: backup
   #   litellm_params:
@@ -125,6 +258,18 @@ model_list:
       additional_drop_params: ["reasoningSummary"]
     model_info:
       max_output_tokens: 16384
+
+  # --- NEW (2026-10-03): explicit gemini-2.0-flash proved RETIRED by Google
+  #     (live 404: "this model is no longer available"). Replaced with the
+  #     rolling Lite alias — a genuinely lighter/faster model than the main
+  #     alias, and it can never 404 on version churn. Same free key. ---
+  - model_name: backup
+    litellm_params:
+      model: gemini/gemini-flash-lite-latest
+      api_key: os.environ/GEMINI_API_KEY
+      additional_drop_params: ["reasoningSummary"]
+    model_info:
+      max_output_tokens: 8192
 
   - model_name: backup
     litellm_params:
