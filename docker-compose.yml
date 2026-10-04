@@ -9,6 +9,9 @@ services:
       - .env
     volumes:
       - ./litellm-config.yaml:/app/config.yaml:ro
+      # Custom pre-call hooks (strip replayed reasoning_content from
+      # assistant messages - strict providers like Cerebras reject it)
+      - ./litellm_hooks.py:/app/litellm_hooks.py:ro
     command:
       - "--config"
       - "/app/config.yaml"

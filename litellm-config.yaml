@@ -203,7 +203,23 @@ model_list:
 
   # ==========================================================================
   # REASONING GROUP  (chain: reasoning -> backup)
-  # Gemini (rolling alias, key verified live 2026-10-01) -> OpenRouter -> Cerebras
+  # All Gemini model IDs use the explicit ``gemini/gemini-…`` prefix so LiteLLM
+  # sends them as Google AI Studio models (x-goog-api-key header) and never
+  # accidentally as an OpenAI-style Bearer token. That stops the 401
+  #  ACCESS_TOKEN_TYPE_UNSUPPORTED error that happens when an OAuth2 token
+  #  (starting ``AQ.A…``) ends up in the wrong header.
+  #
+  # Model IDs:
+  #   ``gemini/gemini-flash-latest``     rolling alias — always points at the
+  #                                       current Flash model, never 404s on
+  #                                       version churn (free tier)
+  #   ``gemini/gemini-flash-lite-latest`` lighter/faster Flash variant (free
+  #                                       tier, secondary backup deployment)
+  #
+  # NOTE: before adding new /1.5/* or /2.0/* *versioned* IDs, verify in the
+  #   Google Maven model list that they still exist (promptly retired IDs like
+  #   ``gemini-2.0-flash`` return 404 and waste the call). Rolling aliases
+  #   are preferred because they track the current model automatically.
   # ==========================================================================
   - model_name: reasoning
     litellm_params:
@@ -212,6 +228,8 @@ model_list:
       additional_drop_params: ["reasoningSummary"]
     model_info:
       max_output_tokens: 65536
+      context_window: 1048576
+
 
   - model_name: reasoning
     litellm_params:
@@ -232,11 +250,10 @@ model_list:
 
   # ==========================================================================
   # BACKUP GROUP (last resort - no further fallbacks from here)
-  # Gemini rolling alias -> explicit Gemini 2.0 Flash (NEW, second deployment
-  # on the same free key) -> OpenRouter -> GitHub Models (pending)
-  # NOTE: GitHub Models goes through the openai/ passthrough because LiteLLM's
-  # native github/ handler throws connection errors in current images; the raw
-  # endpoint is OpenAI-compatible.
+  # Two independent Gemini deployments on the same free key so that a single
+  # key cooldown/rotation doesn't take the whole group down. Each uses a
+  # distinct rolling alias so the deployments can never collide on version
+  # churn.
   # ==========================================================================
   # --- GitHub Models (commented out: endpoint STILL returns a non-JSON "OK"
   #     body for this token/network, re-verified with raw HTTP 2026-10-03.
@@ -250,7 +267,7 @@ model_list:
   #   model_info:
   #     max_output_tokens: 16384
 
-  # --- Gemini (re-enabled: new key verified live 2026-10-01) ---------------
+  # --- Primary Gemini backup (rolling alias, free tier) ------------------
   - model_name: backup
     litellm_params:
       model: gemini/gemini-flash-latest
@@ -259,10 +276,10 @@ model_list:
     model_info:
       max_output_tokens: 16384
 
-  # --- NEW (2026-10-03): explicit gemini-2.0-flash proved RETIRED by Google
-  #     (live 404: "this model is no longer available"). Replaced with the
-  #     rolling Lite alias — a genuinely lighter/faster model than the main
-  #     alias, and it can never 404 on version churn. Same free key. ---
+  # --- Secondary Gemini backup (lots/alias, free tier) --------------------
+  # ``gemini/gemini-flash-lite-latest`` is lighter/faster than the main Flash
+  # alias. If Google retires it, switch to another alias (e.g. ``gemini/gemini-1.5-flash-latest``)
+  # and verify it still exists first — the same ``gemini/`` prefix rule applies.
   - model_name: backup
     litellm_params:
       model: gemini/gemini-flash-lite-latest
@@ -311,3 +328,7 @@ litellm_settings:
   request_timeout: 120
   # Never print keys/headers in logs
   set_verbose: false
+  # Pre-call hook: strips reasoning_content / thinking_blocks from replayed
+  # assistant messages. Without this, multi-turn sessions break on fallback
+  # (e.g. Cerebras 400: "messages.N.assistant.reasoning_content unsupported")
+  callbacks: litellm_hooks.reasoning_stripper

@@ -8,7 +8,7 @@ import yaml
 from pathlib import Path
 from typing import List, Dict, Optional, Any
 from datetime import datetime
-
+from .rate_limiter import RateLimiter
 
 class ModelCapability:
     """Represents a model's capabilities and characteristics."""
@@ -65,8 +65,9 @@ class ModelCapability:
 
 class ModelCapabilityRegistry:
     """Manages model capabilities and selection logic."""
-    
+
     def __init__(self, config_path: str = ".moon/config/orchestration.yaml"):
+        self.rate_limiter = RateLimiter()
         self.config_path = Path(config_path)
         self.models: Dict[str, List[ModelCapability]] = {}
         self.failure_config: Dict[str, Any] = {}
@@ -107,17 +108,17 @@ class ModelCapabilityRegistry:
         """Load default model capabilities if no config file exists."""
         default_models = {
             'coding': [
-                {"name": "groq/gpt-oss-120b", "capabilities": ["coding", "reasoning", "file_read", "file_write", "shell", "testing", "debugging"], "max_output_tokens": 65536, "context_window": 131072},
-                {"name": "cerebras/gpt-oss-120b", "capabilities": ["coding", "reasoning", "file_read", "file_write", "shell", "testing"], "max_output_tokens": 32768, "context_window": 65536},
-                {"name": "mistral/codestral-latest", "capabilities": ["coding", "file_read", "file_write", "shell", "testing", "debugging"], "max_output_tokens": 16384, "context_window": 262144}
+                {"name": "groq/gpt-oss-120b", "capabilities": ["coding", "code_generation", "reasoning", "terminal_execution", "tool_use", "file_read", "file_write", "shell", "testing", "debugging"], "max_output_tokens": 65536, "context_window": 131072},
+                {"name": "cerebras/gpt-oss-120b", "capabilities": ["coding", "code_generation", "reasoning", "terminal_execution", "tool_use", "file_read", "file_write", "shell", "testing"], "max_output_tokens": 32768, "context_window": 65536},
+                {"name": "mistral/codestral-latest", "capabilities": ["coding", "code_generation", "terminal_execution", "tool_use", "file_read", "file_write", "shell", "testing", "debugging"], "max_output_tokens": 16384, "context_window": 262144}
             ],
             'reasoning': [
-                {"name": "gemini/gemini-flash-latest", "capabilities": ["reasoning", "planning", "long_context", "coding", "file_read", "file_write"], "max_output_tokens": 65536, "context_window": 1048576},
-                {"name": "cerebras/qwen-3.8-27b", "capabilities": ["reasoning", "coding", "file_read", "file_write"], "max_output_tokens": 16384, "context_window": 65536}
+                {"name": "gemini/gemini-flash-latest", "capabilities": ["reasoning", "planning", "long_context", "coding", "code_generation", "terminal_execution", "tool_use", "file_read", "file_write"], "max_output_tokens": 65536, "context_window": 1048576},
+                {"name": "cerebras/qwen-3.8-27b", "capabilities": ["reasoning", "coding", "code_generation", "tool_use", "file_read", "file_write"], "max_output_tokens": 16384, "context_window": 65536}
             ],
             'backup': [
-                {"name": "gemini/gemini-flash-latest", "capabilities": ["reasoning", "coding", "file_read", "file_write"], "max_output_tokens": 16384, "context_window": 1048576},
-                {"name": "openrouter/north-mini-code:free", "capabilities": ["coding", "file_read", "file_write", "testing"], "max_output_tokens": 16384, "context_window": 32768}
+                {"name": "gemini/gemini-flash-latest", "capabilities": ["reasoning", "coding", "code_generation", "terminal_execution", "tool_use", "file_read", "file_write"], "max_output_tokens": 16384, "context_window": 1048576},
+                {"name": "openrouter/north-mini-code:free", "capabilities": ["coding", "code_generation", "file_read", "file_write", "testing"], "max_output_tokens": 16384, "context_window": 32768}
             ]
         }
         
@@ -159,9 +160,9 @@ class ModelCapabilityRegistry:
                     results.append(model)
         return results
     
-    def select_model_for_capability(self, capability: str, 
-                                     prefer_group: str = None,
-                                     context_size: int = 0) -> Optional[ModelCapability]:
+    def select_model_for_capability(self, capability: str,
+                                    prefer_group: str = None,
+                                    context_size: int = 0) -> Optional[ModelCapability]:
         """Select the best model for a specific capability."""
         candidates = self.find_models_by_capability(capability)
         
@@ -180,8 +181,25 @@ class ModelCapabilityRegistry:
             if context_candidates:
                 candidates = context_candidates
         
+        # Filter by rate limits - exclude models that are approaching limits
+        healthy_candidates = []
+        for model in candidates:
+            # Parse model name to get provider and model identifier
+            if '/' in model.name:
+                provider, model_name = model.name.split('/', 1)
+                # Check if we should switch away from this model due to rate limits
+                if not self.rate_limiter.should_switch_model(provider.lower(), model_name.lower()):
+                    healthy_candidates.append(model)
+            else:
+                # If we can't parse, assume it's healthy
+                healthy_candidates.append(model)
+        
+        # If all models are rate-limited, fall back to original candidates
+        if not healthy_candidates:
+            healthy_candidates = candidates
+        
         # Select model with most capabilities and least failures
-        best_model = max(candidates, key=lambda m: (
+        best_model = max(healthy_candidates, key=lambda m: (
             len(m.capabilities),
             -m.failure_count
         ))
@@ -189,8 +207,24 @@ class ModelCapabilityRegistry:
         return best_model
     
     def select_model_for_capabilities(self, capabilities: List[str],
-                                       prefer_group: str = None,
-                                       context_size: int = 0) -> Optional[ModelCapability]:
+                                      prefer_group: str = None,
+                                      context_size: int = 0,
+                                      skip_provider_id: Optional[str] = None) -> Optional[ModelCapability]:
+        """Select the best model for multiple capabilities.
+
+        Parameters
+        ----------
+        capabilities
+            Capabilities the model must have.
+        prefer_group
+            Prefer a model from this group when possible.
+        context_size
+            Minimum context window in tokens.
+        skip_provider_id
+            When set, models whose provider (the ``provider/`` prefix of the
+            model name) matches this ID are excluded from selection. Used during
+            auth failover so we don't replay a misconfigured key.
+        """
         """Select the best model for multiple capabilities."""
         candidates = self.find_models_by_capabilities(capabilities)
         
@@ -216,8 +250,25 @@ class ModelCapabilityRegistry:
             if context_candidates:
                 candidates = context_candidates
         
-        # Select model with most matching capabilities and least failures
-        best_model = max(candidates, key=lambda m: (
+        # Filter by rate limits - exclude models that are approaching limits,
+        # and (for auth-failover) skip models from a provider whose key just
+        # 401'd so we don't repeat the misconfigured key.
+        healthy_candidates = []
+        for model in candidates:
+            if '/' in model.name:
+                provider_part, model_name = model.name.split('/', 1)
+                provider_lower = provider_part.lower()
+                if skip_provider_id and provider_lower == skip_provider_id.lower():
+                    continue
+                if not self.rate_limiter.should_switch_model(provider_lower, model_name.lower()):
+                    healthy_candidates.append(model)
+            else:
+                healthy_candidates.append(model)
+
+        if not healthy_candidates:
+            healthy_candidates = candidates
+
+        best_model = max(healthy_candidates, key=lambda m: (
             len([c for c in capabilities if m.has_capability(c)]),
             -m.failure_count
         ))
@@ -236,6 +287,9 @@ class ModelCapabilityRegistry:
             if failure_type in ("RATE_LIMIT", "PROVIDER_ERROR", "TIMEOUT"):
                 import datetime as dt
                 model.cooldown_until = dt.datetime.now() + dt.timedelta(seconds=cooldown_seconds)
+            
+            # Mark model as unhealthy in rate limiter
+            self.rate_limiter.mark_model_unhealthy(model.name.split('/')[0], model.name.split('/')[1])
     
     def mark_model_success(self, model_name: str):
         """Mark a model as successful."""
@@ -244,6 +298,9 @@ class ModelCapabilityRegistry:
             model.last_used = datetime.now().isoformat()
             # Reset failure count on success
             model.failure_count = 0
+            
+            # Mark model as healthy in rate limiter
+            self.rate_limiter.mark_model_healthy(model.name.split('/')[0], model.name.split('/')[1])
     
     def get_model_groups(self) -> List[str]:
         """Get all available model groups."""

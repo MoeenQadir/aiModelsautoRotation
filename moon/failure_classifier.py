@@ -9,7 +9,7 @@ from datetime import datetime
 
 from .task_state import TaskState, Todo
 from .model_registry import ModelCapabilityRegistry
-from .handoff_manager import CapabilityHandoffManager
+from .handoff_manager import CapabilityHandoffManager, HandoffManager
 
 
 class FailureClassifier:
@@ -49,21 +49,108 @@ class FailureClassifier:
         }
     
     def _infer_error_type(self, error_message: str) -> str:
-        """Infer error type from error message."""
+        """Infer error type from error message.
+
+        Explicit category prefixes ("network error", "auth error", ...) are
+        checked before generic symptom keywords ("timeout", ...) so that a
+        message like "Network error: Connection timeout" classifies as
+        NETWORK_ERROR rather than TIMEOUT.
+        """
         error_message = error_message.lower()
-        
+
+        # --- Deterministic auth failures take priority over category matching.
+        # A 401 / ACCESS_TOKEN_TYPE_UNSUPPORTED is not a transient network
+        # problem; the key/credential is simply wrong for the endpoint. Retrying
+        # or putting the model on cooldown wastes seconds that are better spent
+        # falling to the next provider in the chain.
+        auth_markers = (
+            "401",
+            "unauthorized",
+            "unauthenticated",
+            "access token type unsupported",
+            "access_token_type_unsupported",
+            "invalid authentication credentials",
+            "invalid api key",
+            "authentication error",
+            "auth error",
+            "auth_error",
+            "auth failure",
+            "auth_failure",
+        )
+        if any(marker in error_message for marker in auth_markers):
+            return "AUTH_FAILURE"
+
+        # --- Capability refusal / unsupported feature detection ---
+        # Models that cannot execute terminal commands, use tools, or run code
+        # return text refusals. These are deterministic — the model will never
+        # gain the capability mid-session. Rotate immediately.
+        capability_markers = (
+            "cannot execute terminal commands",
+            "can't execute terminal commands",
+            "cannot execute commands",
+            "can't execute commands",
+            "i don't have access to terminal",
+            "i do not have access to terminal",
+            "don't have direct access to a terminal",
+            "don't have access to a terminal",
+            "don't have access to the terminal",
+            "do not have direct access to a terminal",
+            "i am an ai text-based model and don't have",
+            "i am a text model and cannot run code",
+            "i'm a text model and cannot run code",
+            "i cannot run code",
+            "i can't run code",
+            "i cannot execute code",
+            "i can't execute code",
+            "function_calling_not_supported",
+            "function calling is not supported",
+            "tool_use_failed",
+            "tool use is not supported",
+            "tool_use_not_supported",
+            "does not support function calling",
+            "does not support tool use",
+            "does not support tools",
+            "tool_calls is not supported",
+            "tools parameter is not supported",
+            "unable to execute",
+            "no code execution capability",
+            "code execution is not available",
+            "cannot perform terminal operations",
+            "i cannot access the file system",
+            "i can't access the file system",
+            "i don't have the ability to run",
+            "i do not have the ability to run",
+        )
+        if any(marker in error_message for marker in capability_markers):
+            return "CAPABILITY_UNSUPPORTED"
+
+        # --- Missing data / dataset detection ---
+        missing_data_markers = (
+            "no_data",
+            "no candles found",
+            "no data found",
+            "data not found",
+            "missing dataset",
+            "dataset not found",
+            "empty dataset",
+            "0 candles found",
+        )
+        if any(marker in error_message for marker in missing_data_markers):
+            return "MISSING_DATA"
+
+        # --- Explicit category mentions first ---
         if "permission" in error_message or "access denied" in error_message:
             return "PERMISSION_ERROR"
         elif "rate limit" in error_message or "too many requests" in error_message:
             return "RATE_LIMIT"
-        elif "timeout" in error_message or "took too long" in error_message:
-            return "TIMEOUT"
-        elif "context window" in error_message or "too large" in error_message:
-            return "CONTEXT_LIMIT"
-        elif "tool error" in error_message or "invalid tool call" in error_message:
-            return "TOOL_ERROR"
         elif "network error" in error_message or "connection failed" in error_message:
             return "NETWORK_ERROR"
+        elif "authentication error" in error_message or "invalid api key" in error_message:
+            return "AUTH_ERROR"
+        elif "provider error" in error_message or "service unavailable" in error_message:
+            return "PROVIDER_ERROR"
+        elif "tool error" in error_message or "invalid tool call" in error_message:
+            return "TOOL_ERROR"
         elif "syntax error" in error_message or "invalid syntax" in error_message:
             return "SYNTAX_ERROR"
         elif "build error" in error_message or "compilation failed" in error_message:
@@ -72,12 +159,13 @@ class FailureClassifier:
             return "TEST_FAILURE"
         elif "dependency error" in error_message or "missing dependency" in error_message:
             return "DEPENDENCY_ERROR"
-        elif "authentication error" in error_message or "invalid api key" in error_message:
-            return "AUTH_ERROR"
-        elif "provider error" in error_message or "service unavailable" in error_message:
-            return "PROVIDER_ERROR"
         elif "model error" in error_message or "model failed" in error_message:
             return "MODEL_ERROR"
+        # --- Generic symptom keywords ---
+        elif "timeout" in error_message or "took too long" in error_message:
+            return "TIMEOUT"
+        elif "context window" in error_message or "too large" in error_message:
+            return "CONTEXT_LIMIT"
         
         return "UNKNOWN_ERROR"
     
@@ -97,7 +185,14 @@ class FailureClassifier:
                 "description": "Find model with required capability",
                 "capabilities": self._get_required_capabilities(todo)
             })
-        
+
+        elif failure_type == "PROVIDER_ERROR":
+            # Rotate to a different deployment or provider
+            actions.append({
+                "type": "rotate_deployment",
+                "description": "Switch to different deployment or provider"
+            })
+
         elif failure_type == "RATE_LIMIT":
             # Rotate deployment
             actions.append({
@@ -143,6 +238,21 @@ class FailureClassifier:
                 "capabilities": self._get_required_capabilities(todo)
             })
         
+        elif failure_type == "CAPABILITY_UNSUPPORTED":
+            # Capability refusal — model lacks terminal/tool/code execution
+            actions.append({
+                "type": "capability_handoff",
+                "description": "Model lacks required capability (terminal/tool/code execution) — rotate to capable model",
+                "capabilities": self._get_required_capabilities_with_execution(todo)
+            })
+
+        elif failure_type == "MISSING_DATA":
+            # Autonomous data auto-fetch / data generator action
+            actions.append({
+                "type": "auto_fetch_data",
+                "description": "Autonomous Turbo Mode: Automatically fetch or download required dataset and re-execute task"
+            })
+        
         elif failure_type == "NETWORK_ERROR":
             # Retry with backoff
             actions.append({
@@ -179,10 +289,17 @@ class FailureClassifier:
             })
         
         elif failure_type == "AUTH_ERROR":
-            # Rotate API key or provider
+            # Legacy AUTH_ERROR path — prefer AUTH_FAILURE above for explicit
+            # 401 / ACCESS_TOKEN_TYPE_UNSUPPORTED, but route this the same way.
             actions.append({
-                "type": "rotate_api_key",
-                "description": "Rotate API key or switch provider"
+                "type": "instant_fallback",
+                "description": "Auth error (legacy AUTH_ERROR) - rotate to next provider immediately, no retries, no cooldown"
+            })
+            # Rotate API key or provider (legacy AUTH_ERROR path — prefer
+            # AUTH_FAILURE above for explicit 401 / ACCESS_TOKEN_TYPE_UNSUPPORTED)
+            actions.append({
+                "type": "instant_fallback",
+                "description": "Auth error - rotate API key or switch provider"
             })
         
         else:
@@ -210,12 +327,25 @@ class FailureClassifier:
         
         return ["coding"]
 
+    def _get_required_capabilities_with_execution(self, todo: Todo) -> List[str]:
+        """Determine required capabilities for a todo that needs execution support.
+
+        Unlike ``_get_required_capabilities``, this always includes
+        ``terminal_execution`` and ``tool_use`` so the handoff targets a model
+        that can actually run commands and use tools.
+        """
+        base = self._get_required_capabilities(todo)
+        for cap in ("terminal_execution", "tool_use"):
+            if cap not in base:
+                base.append(cap)
+        return base
+
 
 class FailureRecoveryManager:
     """Manages failure recovery strategies."""
-    
+
     def __init__(self, model_registry: ModelCapabilityRegistry,
-                 handoff_manager: CapabilityHandoffManager):
+                 handoff_manager: HandoffManager):
         self.model_registry = model_registry
         self.handoff_manager = handoff_manager
     
@@ -223,11 +353,26 @@ class FailureRecoveryManager:
                          failure: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Attempt to recover from a failure."""
         failure_type = failure["failure_type"]
-        
-        # Get recovery strategy
+
+        # --- Instant-auth fast-failover ---
+        # A 401 / ACCESS_TOKEN_TYPE_UNSUPPORTED is deterministic: the credential
+        # is wrong for the endpoint. Do NOT retry (the retry will 401 again) and
+        # do NOT put the model on a cooldown (the proxy's `allowed_fails`/`cooldown_time`
+        # is already configured to keep that short). Jump to the next deployment
+        # in the chain so the caller pays the misconfigured-key hit once.
+        if failure_type in ("AUTH_FAILURE", "AUTH_ERROR", "CAPABILITY_UNSUPPORTED"):
+            return {
+                "recovery_type": "instant_fallback",
+                "failure_type": failure_type,
+                "action": "rotate_to_next_provider",
+                "model": task.active_model.name if task.active_model else None,
+                "success": True,
+                "message": f"{failure_type} detected - rotating to next provider immediately (no retries, no backoff)"
+            }
+
+        # --- Normal recovery path ---
         strategy = self.model_registry.get_failure_strategy(failure_type)
-        
-        # Execute recovery based on strategy
+
         if strategy["recovery"] == "retry_same_model":
             return self._retry_same_model(task, todo, failure)
         

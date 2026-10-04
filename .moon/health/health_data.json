@@ -1,0 +1,35 @@
+{
+  "groq:groq/gpt-oss-120b": {
+    "model_name": "groq/gpt-oss-120b",
+    "provider": "groq",
+    "ttft": 1.1315075315692043,
+    "total_latency": 1.1745780592464647,
+    "success_rate": 0.9671366780425386,
+    "last_check": 1791147745.1856034,
+    "consecutive_failures": 0,
+    "is_healthy": true,
+    "is_degraded": false
+  },
+  "gemini:gemini/gemini-flash-latest": {
+    "model_name": "gemini/gemini-flash-latest",
+    "provider": "gemini",
+    "ttft": 0.9370672454805954,
+    "total_latency": 1.039386410879759,
+    "success_rate": 0.9967148135865613,
+    "last_check": 1791147746.5122037,
+    "consecutive_failures": 0,
+    "is_healthy": true,
+    "is_degraded": false
+  },
+  "mistral:mistral/codestral-latest": {
+    "model_name": "mistral/codestral-latest",
+    "provider": "mistral",
+    "ttft": 1.1469766627484417,
+    "total_latency": 1.218136693319341,
+    "success_rate": 0.9849902942690871,
+    "last_check": 1791147746.944516,
+    "consecutive_failures": 0,
+    "is_healthy": true,
+    "is_degraded": false
+  }
+}

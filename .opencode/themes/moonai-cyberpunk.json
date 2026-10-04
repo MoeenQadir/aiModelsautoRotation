@@ -1,0 +1,94 @@
+{
+  "$schema": "https://opencode.ai/theme.json",
+  "defs": {
+    "bg_deep":       "#050a0e",
+    "bg_base":       "#0a0f1a",
+    "bg_panel":      "#0d1526",
+    "bg_surface":    "#111c30",
+    "bg_elevated":   "#162038",
+    "cyan":          "#00f5ff",
+    "cyan_dim":      "#00b8c8",
+    "cyan_dark":     "#006070",
+    "green":         "#00ff9f",
+    "green_dim":     "#00c87a",
+    "purple":        "#c084fc",
+    "purple_dim":    "#9333ea",
+    "pink":          "#ff2d78",
+    "yellow":        "#ffd700",
+    "orange":        "#ff8c00",
+    "red":           "#ff3333",
+    "red_dim":       "#cc2200",
+    "white":         "#e2f3ff",
+    "grey_light":    "#8bafc8",
+    "grey_mid":      "#3a5070",
+    "grey_dark":     "#1a2c45",
+    "border_glow":   "#00f5ff",
+    "border_dim":    "#0e3048"
+  },
+  "base": {
+    "text": {
+      "base":    "#e2f3ff",
+      "muted":   "#8bafc8",
+      "subtle":  "#3a5070",
+      "link":    "#00f5ff",
+      "primary": "#00f5ff"
+    },
+    "background": {
+      "base":    "#0a0f1a",
+      "raised":  "#111c30",
+      "overlay": "#0d1526",
+      "sunken":  "#050a0e"
+    },
+    "border": {
+      "base":    "#0e3048",
+      "focused": "#00f5ff",
+      "subtle":  "#1a2c45"
+    },
+    "primary": {
+      "base":   "#00f5ff",
+      "muted":  "#00b8c8",
+      "subtle": "#006070"
+    },
+    "success": "#00ff9f",
+    "warning": "#ffd700",
+    "error":   "#ff3333",
+    "info":    "#00f5ff"
+  },
+  "dark": {
+    "hue": {
+      "accent": "#00f5ff"
+    },
+    "text": {
+      "base":    "#e2f3ff",
+      "muted":   "#8bafc8",
+      "subtle":  "#3a5070",
+      "link":    "#00f5ff",
+      "primary": "#00f5ff"
+    },
+    "background": {
+      "base":    "#0a0f1a",
+      "raised":  "#111c30",
+      "overlay": "#0d1526",
+      "sunken":  "#050a0e"
+    },
+    "border": {
+      "base":    "#0e3048",
+      "focused": "#00f5ff",
+      "subtle":  "#1a2c45"
+    },
+    "primary": {
+      "base":   "#00f5ff",
+      "muted":  "#00b8c8",
+      "subtle": "#006070"
+    },
+    "success": "#00ff9f",
+    "warning": "#ffd700",
+    "error":   "#ff3333",
+    "info":    "#c084fc"
+  },
+  "light": {
+    "hue": {
+      "accent": "#0060d0"
+    }
+  }
+}

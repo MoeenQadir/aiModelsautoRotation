@@ -7,6 +7,7 @@ import json
 import os
 import time
 import uuid
+import sqlite3
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from datetime import datetime
@@ -104,8 +105,8 @@ class TaskState:
                 break
 
     def create_handoff(self, todo_id: str, source_model: str, target_model: str,
-                       required_capability: str, blocked_operation: str,
-                       task_summary: str, expected_result: str = None) -> Dict[str, Any]:
+                        required_capability: str, blocked_operation: str,
+                        task_summary: str, expected_result: str = None) -> Dict[str, Any]:
         """Create a structured handoff record."""
         handoff = {
             "task_id": self.task_id,
@@ -202,7 +203,7 @@ class TaskState:
 
 class Todo:
     """Represents a single TODO item in the task."""
-    
+
     def __init__(self, todo_id: str, title: str, description: str = "", 
                  status: str = "PENDING", dependencies: List[str] = None,
                  assigned_model: str = None, parent_todo: str = None):
@@ -217,8 +218,8 @@ class Todo:
         self.completed_at = None
         self.result = None
         self.failure_reason = None
-        self.parent_todo = None
-    
+        self.parent_todo = parent_todo
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "id": self.id,
@@ -234,7 +235,7 @@ class Todo:
             "failure_reason": self.failure_reason,
             "parent_todo": self.parent_todo
         }
-    
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'Todo':
         todo = cls.__new__(cls)
@@ -244,48 +245,100 @@ class Todo:
 
 
 class TaskStateManager:
-    """Manages persistent task state and TODOs."""
-    
+    """Manages persistent task state and TODOs with SQLite primary and JSON fallback."""
+
     def __init__(self, state_dir: str = ".moon/tasks"):
         self.state_dir = Path(state_dir)
         self.state_dir.mkdir(parents=True, exist_ok=True)
-    
+        self.use_sqlite = False
+        self.db_path = self.state_dir / "task_state.db"
+        self._init_sqlite()
+        
+    def _init_sqlite(self):
+        """Initialize SQLite database and set use_sqlite flag."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            # Create tasks table if not exists
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS tasks (
+                    task_id TEXT PRIMARY KEY,
+                    task_state TEXT NOT NULL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            conn.commit()
+            conn.close()
+            self.use_sqlite = True
+        except Exception as e:
+            # Fall back to JSON file storage
+            self.use_sqlite = False
+            # Ensure state directory exists for JSON files
+            self.state_dir.mkdir(parents=True, exist_ok=True)
+
+    def _get_db_connection(self):
+        """Get a database connection."""
+        if not self.use_sqlite:
+            return None
+        try:
+            return sqlite3.connect(self.db_path)
+        except Exception:
+            self.use_sqlite = False
+            return None
+
     def create_task(self, original_request: str) -> TaskState:
         """Create a new task with initial state."""
         task = TaskState(original_request=original_request)
         self.save_task(task)
         return task
-    
+
     def save_task(self, task: TaskState):
-        """Persist task state to disk."""
+        """Persist task state to disk (SQLite primary, JSON fallback)."""
         task.update_timestamp()
+        task_json = json.dumps(task.to_dict(), default=lambda o: o.to_dict() if hasattr(o, 'to_dict') else str(o))
+        
+        if self.use_sqlite:
+            try:
+                conn = self._get_db_connection()
+                if conn:
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "INSERT OR REPLACE INTO tasks (task_id, task_state, updated_at) VALUES (?, ?, ?)",
+                        (task.task_id, task_json, task.updated_at)
+                    )
+                    conn.commit()
+                    conn.close()
+                    return
+            except Exception:
+                self.use_sqlite = False
+        
+        # Fallback to JSON file storage
         task_dir = self.state_dir / task.task_id
         task_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Save task.json
         task_file = task_dir / "task.json"
         with open(task_file, 'w', encoding='utf-8') as f:
-            json.dump(task.to_dict(), f, indent=2, default=lambda o: o.to_dict() if hasattr(o, 'to_dict') else str(o))
-        
-        # Save todos.json separately for easier access
-        todos_file = task_dir / "todos.json"
-        with open(todos_file, 'w', encoding='utf-8') as f:
-            todos_dict = []
-            for todo in task.todos:
-                if hasattr(todo, 'to_dict'):
-                    todos_dict.append(todo.to_dict())
-                elif isinstance(todo, dict):
-                    todos_dict.append(todo)
-            json.dump(todos_dict, f, indent=2, default=lambda o: o.to_dict() if hasattr(o, 'to_dict') else str(o))
-        
-        # Save plan.json if plan exists
-        if task.plan:
-            plan_file = task_dir / "plan.json"
-            with open(plan_file, 'w', encoding='utf-8') as f:
-                json.dump(task.plan, f, indent=2, default=lambda o: o.to_dict() if hasattr(o, 'to_dict') else str(o))
-    
+            f.write(task_json)
+
     def load_task(self, task_id: str) -> Optional[TaskState]:
-        """Load task state from disk."""
+        """Load task state from disk (SQLite primary, JSON fallback)."""
+        if self.use_sqlite:
+            try:
+                conn = self._get_db_connection()
+                if conn:
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "SELECT task_state FROM tasks WHERE task_id = ?",
+                        (task_id,)
+                    )
+                    row = cursor.fetchone()
+                    conn.close()
+                    if row:
+                        data = json.loads(row[0])
+                        return TaskState.from_dict(data)
+            except Exception:
+                self.use_sqlite = False
+        
+        # Fallback to JSON file storage
         task_file = self.state_dir / task_id / "task.json"
         if not task_file.exists():
             return None
@@ -293,10 +346,34 @@ class TaskStateManager:
         with open(task_file, 'r', encoding='utf-8') as f:
             data = json.load(f)
         return TaskState.from_dict(data)
-    
+
     def list_tasks(self) -> List[Dict[str, Any]]:
         """List all tasks with basic info."""
         tasks = []
+        if self.use_sqlite:
+            try:
+                conn = self._get_db_connection()
+                if conn:
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "SELECT task_id, task_state, updated_at FROM tasks ORDER BY updated_at DESC"
+                    )
+                    rows = cursor.fetchall()
+                    conn.close()
+                    for row in rows:
+                        data = json.loads(row[1])
+                        tasks.append({
+                            "task_id": row[0],
+                            "status": data.get("status", "UNKNOWN"),
+                            "created_at": data.get("created_at", ""),
+                            "updated_at": row[2],
+                            "original_request": data.get("original_request", "")[:100]
+                        })
+                    return tasks
+            except Exception:
+                self.use_sqlite = False
+        
+        # Fallback to JSON file storage
         for task_dir in self.state_dir.iterdir():
             if task_dir.is_dir():
                 task = self.load_task(task_dir.name)
@@ -309,9 +386,9 @@ class TaskStateManager:
                         "original_request": task.original_request[:100]
                     })
         return sorted(tasks, key=lambda x: x["created_at"], reverse=True)
-    
+
     def add_todo(self, task: TaskState, title: str, description: str = "",
-                 dependencies: List[str] = None, parent_todo: str = None) -> Todo:
+                  dependencies: List[str] = None, parent_todo: str = None) -> Todo:
         """Add a TODO to the task."""
         todo_id = f"todo_{len(task.todos) + 1}"
         if parent_todo:
@@ -327,7 +404,7 @@ class TaskStateManager:
         task.todos.append(todo)
         self.save_task(task)
         return todo
-    
+
     def update_todo_status(self, task: TaskState, todo_id: str, status: str,
                           result: str = None, failure_reason: str = None):
         """Update TODO status."""
@@ -350,28 +427,28 @@ class TaskStateManager:
                     })
                 break
         self.save_task(task)
-    
+
     def get_active_todos(self, task: TaskState) -> List[Todo]:
         """Get all active (not completed/failed/skipped) todos."""
         return [todo for todo in task.todos if hasattr(todo, 'status') and todo.status in ("PENDING", "IN_PROGRESS", "BLOCKED")]
-    
+
     def get_pending_todos(self, task: TaskState) -> List[Todo]:
         """Get all pending todos."""
         return [todo for todo in task.todos if hasattr(todo, 'status') and todo.status == "PENDING"]
-    
+
     def get_blocked_todos(self, task: TaskState) -> List[Todo]:
         """Get all blocked todos."""
         return [todo for todo in task.todos if hasattr(todo, 'status') and todo.status == "BLOCKED"]
-    
+
     def get_failed_todos(self, task: TaskState) -> List[Todo]:
         """Get all failed todos."""
         return [todo for todo in task.todos if hasattr(todo, 'status') and todo.status == "FAILED"]
-    
+
     def can_complete_task(self, task: TaskState) -> bool:
         """Check if task can be marked complete."""
         active_todos = self.get_active_todos(task)
         return len(active_todos) == 0
-    
+
     def record_model_switch(self, task: TaskState, new_model: str, reason: str):
         """Record a model switch in task history."""
         if task.active_model:
@@ -383,9 +460,9 @@ class TaskStateManager:
             "reason": reason
         })
         self.save_task(task)
-    
+
     def record_failure(self, task: TaskState, failure_type: str, error_message: str,
-                       context: Dict[str, Any] = None):
+                      context: Dict[str, Any] = None):
         """Record a failure in task state."""
         task.failures.append({
             "failure_type": failure_type,
@@ -399,11 +476,11 @@ class TaskStateManager:
             "timestamp": datetime.now().isoformat()
         })
         self.save_task(task)
-    
+
     def create_handoff(self, task: TaskState, todo_id: str, source_model: str,
-                       target_model: str, required_capability: str,
-                       blocked_operation: str, task_summary: str,
-                       expected_result: str = None) -> Dict[str, Any]:
+                      target_model: str, required_capability: str,
+                      blocked_operation: str, task_summary: str,
+                      expected_result: str = None) -> Dict[str, Any]:
         """Create a structured handoff record."""
         handoff = {
             "task_id": task.task_id,
@@ -424,7 +501,7 @@ class TaskStateManager:
         task.handoffs.append(handoff)
         self.save_task(task)
         return handoff
-    
+
     def generate_recovery_context(self, task: TaskState) -> Dict[str, Any]:
         """Generate compact recovery context for model handoff."""
         todos_data = []
@@ -446,9 +523,31 @@ class TaskStateManager:
             "previous_model_action": task.previous_model,
             "context_summary": task.context_summary
         }
-    
+
+    def recover_unfinished_tasks(self) -> List[str]:
+        """Recover task IDs of unfinished tasks (PENDING, IN_PROGRESS, BLOCKED)."""
+        unfinished = []
+        tasks = self.list_tasks()
+        for task_info in tasks:
+            if task_info["status"] in ("PENDING", "IN_PROGRESS", "BLOCKED"):
+                unfinished.append(task_info["task_id"])
+        return unfinished
+
     def delete_task(self, task_id: str):
         """Delete a task and all its data."""
+        if self.use_sqlite:
+            try:
+                conn = self._get_db_connection()
+                if conn:
+                    cursor = conn.cursor()
+                    cursor.execute("DELETE FROM tasks WHERE task_id = ?", (task_id,))
+                    conn.commit()
+                    conn.close()
+                    return
+            except Exception:
+                self.use_sqlite = False
+        
+        # Fallback to JSON file storage
         task_dir = self.state_dir / task_id
         if task_dir.exists():
             import shutil

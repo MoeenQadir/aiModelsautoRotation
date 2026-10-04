@@ -17,6 +17,7 @@ Scenarios:
 9. Successful completion
 """
 
+import sys
 import json
 import os
 import tempfile
@@ -27,10 +28,13 @@ from moon import TaskState, ModelCapabilityRegistry, CapabilityHandoffManager, F
 from moon.failure_classifier import FailureRecoveryManager
 
 
-class E2ETestRunner:
+class TestE2EValidation:
     """Full end-to-end test runner that exercises the complete MoonAI workflow."""
-    
-    def __init__(self):
+
+    def setup_method(self, method=None):
+        self._init_setup()
+
+    def _init_setup(self):
         self.model_registry = ModelCapabilityRegistry()
         self.handoff_manager = CapabilityHandoffManager(self.model_registry)
         self.failure_classifier = FailureClassifier(self.model_registry)
@@ -50,6 +54,9 @@ class E2ETestRunner:
             "duplicate_execution": {"passed": False, "details": ""},
             "successful_completion": {"passed": False, "details": ""},
         }
+
+    def teardown_method(self, method=None):
+        self.cleanup()
         
     def cleanup(self):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
@@ -641,25 +648,13 @@ class E2ETestRunner:
             self.results["successful_completion"] = {"passed": False, "details": str(e)}
 
 
+E2ETestRunner = TestE2EValidation
+
+
 if __name__ == "__main__":
     runner = E2ETestRunner()
     try:
-        # Run each failing test individually
-        for name in ['model_failure', 'retry_recovery', 'process_restart', 'successful_completion']:
-            print(f'=== {name} ===')
-            try:
-                if name == 'model_failure':
-                    runner.test_model_failure()
-                elif name == 'retry_recovery':
-                    runner.test_retry_recovery()
-                elif name == 'process_restart':
-                    runner.test_process_restart()
-                elif name == 'successful_completion':
-                    runner.test_successful_completion()
-            except Exception as e:
-                traceback.print_exc()
-            print(f'Result: {runner.results[name]}')
-            print()
-        exit(0 if all(r['passed'] for r in runner.results.values()) else 1)
+        success = runner.run_all()
+        sys.exit(0 if success else 1)
     finally:
         runner.cleanup()
