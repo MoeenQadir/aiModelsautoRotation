@@ -1,0 +1,248 @@
+# MoonAI Orchestration Configuration
+# All orchestration parameters are configurable here
+
+orchestration:
+  # Task State
+  task_state_dir: ".moon/tasks"
+  log_dir: ".moon/logs"
+  
+  # Execution Control
+  max_model_retries: 3
+  max_handoffs: 5
+  max_review_cycles: 3
+  max_recovery_cycles: 5
+  max_context_tokens: 100000
+  
+  # Auto Features
+  enable_auto_handoff: true
+  enable_auto_review: true
+  enable_auto_test: true
+  enable_context_compaction: true
+  enable_continuous_execution: true
+  
+  # Verification
+  require_tests_pass: true
+  require_build_pass: true
+  require_lint_pass: true
+  require_typecheck_pass: true
+  
+  # Model Selection
+  prefer_same_model: true
+  handoff_timeout_seconds: 120
+  task_timeout_minutes: 60
+  
+  # Context Compaction
+  compaction_threshold_tokens: 80000
+  compaction_keep_recent: 5
+  compaction_summary_max_tokens: 5000
+  
+  # Safety
+  allowed_destructive_operations: []
+  blocked_paths:
+    - "~/.ssh"
+    - "~/.aws"
+    - "~/.config/gcloud"
+    - "/etc"
+    - "C:\\Windows"
+  require_explicit_confirmation_for:
+    - "rm -rf"
+    - "format"
+    - "delete database"
+    - "drop table"
+
+# Model Capability Registry
+# Derived from existing LiteLLM configuration
+models:
+  coding:
+    - name: "groq/gpt-oss-120b"
+      capabilities: ["coding", "reasoning", "file_read", "file_write", "shell", "testing", "debugging", "large_context", "fast_response"]
+      max_output_tokens: 65536
+      context_window: 131072
+    - name: "groq/qwen3.8-27b"
+      capabilities: ["coding", "reasoning", "file_read", "file_write", "shell", "testing", "debugging"]
+      max_output_tokens: 32768
+      context_window: 32768
+    - name: "cerebras/gpt-oss-120b"
+      capabilities: ["coding", "reasoning", "file_read", "file_write", "shell", "testing", "fast_response"]
+      max_output_tokens: 32768
+      context_window: 65536
+    - name: "mistral/codestral-latest"
+      capabilities: ["coding", "file_read", "file_write", "shell", "testing", "debugging", "large_context"]
+      max_output_tokens: 16384
+      context_window: 262144
+    - name: "cloudflare/llama-3.3-70b-fp8-fast"
+      capabilities: ["coding", "reasoning", "file_read", "file_write", "shell", "testing", "fast_response"]
+      max_output_tokens: 8192
+      context_window: 131072
+    - name: "openrouter/qwen3.8-27b:free"
+      capabilities: ["coding", "reasoning", "file_read", "file_write", "shell", "testing", "large_context"]
+      max_output_tokens: 32768
+      context_window: 262144
+    - name: "openrouter/nemotron-3-ultra:free"
+      capabilities: ["coding", "reasoning", "file_read", "file_write", "shell", "testing", "large_context"]
+      max_output_tokens: 65536
+      context_window: 131072
+  
+  reasoning:
+    - name: "gemini/gemini-flash-latest"
+      capabilities: ["reasoning", "planning", "long_context", "coding", "file_read", "file_write", "web", "structured_output"]
+      max_output_tokens: 65536
+      context_window: 1048576
+    - name: "openrouter/nemotron-3-super:free"
+      capabilities: ["reasoning", "planning", "long_context", "coding", "file_read", "file_write"]
+      max_output_tokens: 65536
+      context_window: 131072
+    - name: "cerebras/qwen-3.8-27b"
+      capabilities: ["reasoning", "coding", "file_read", "file_write", "fast_response"]
+      max_output_tokens: 16384
+      context_window: 65536
+  
+  backup:
+    - name: "gemini/gemini-flash-latest"
+      capabilities: ["reasoning", "planning", "long_context", "coding", "file_read", "file_write"]
+      max_output_tokens: 16384
+      context_window: 1048576
+    - name: "gemini/gemini-flash-lite-latest"
+      capabilities: ["reasoning", "coding", "file_read", "file_write", "fast_response"]
+      max_output_tokens: 8192
+      context_window: 1048576
+    - name: "openrouter/north-mini-code:free"
+      capabilities: ["coding", "file_read", "file_write", "testing", "fast_response"]
+      max_output_tokens: 16384
+      context_window: 32768
+
+# Failure Classification
+failure_classification:
+  MODEL_ERROR:
+    recovery: "retry_same_model"
+    max_retries: 2
+    fallback: "next_model_in_group"
+  
+  PROVIDER_ERROR:
+    recovery: "litellm_failover"
+    max_retries: 3
+    fallback: "next_provider"
+  
+  RATE_LIMIT:
+    recovery: "rotate_deployment"
+    max_retries: 3
+    cooldown_seconds: 300
+    fallback: "next_model_in_group"
+  
+  TIMEOUT:
+    recovery: "retry_with_longer_timeout"
+    max_retries: 2
+    fallback: "next_model_in_group"
+  
+  CONTEXT_LIMIT:
+    recovery: "compact_context_or_use_larger_context_model"
+    max_retries: 2
+    fallback: "model_with_larger_context"
+  
+  TOOL_ERROR:
+    recovery: "fix_tool_call_and_retry"
+    max_retries: 2
+    fallback: "capability_handoff"
+  
+  PERMISSION_ERROR:
+    recovery: "find_capable_model"
+    max_retries: 0
+    fallback: "capability_handoff"
+  
+  CAPABILITY_ERROR:
+    recovery: "capability_aware_handoff"
+    max_retries: 0
+    fallback: "find_model_with_required_capability"
+  
+  NETWORK_ERROR:
+    recovery: "retry_with_backoff"
+    max_retries: 3
+    fallback: "next_provider"
+  
+  SYNTAX_ERROR:
+    recovery: "create_fix_todo"
+    max_retries: 0
+    fallback: "review_and_fix"
+  
+  BUILD_ERROR:
+    recovery: "create_fix_todo"
+    max_retries: 0
+    fallback: "review_and_fix"
+  
+  TEST_FAILURE:
+    recovery: "create_fix_todo"
+    max_retries: 0
+    fallback: "review_and_fix"
+  
+  DEPENDENCY_ERROR:
+    recovery: "install_dependency_or_find_alternative"
+    max_retries: 1
+    fallback: "create_fix_todo"
+  
+  AUTH_ERROR:
+    recovery: "rotate_api_key_or_provider"
+    max_retries: 1
+    fallback: "next_provider"
+  
+  UNKNOWN_ERROR:
+    recovery: "log_and_retry"
+    max_retries: 2
+    fallback: "next_model_in_group"
+
+# Capability Mapping
+capabilities:
+  coding:
+    description: "General coding and implementation"
+    required_for: ["implementation", "refactoring", "bug_fix"]
+  
+  reasoning:
+    description: "Complex reasoning and analysis"
+    required_for: ["planning", "architecture", "debugging"]
+  
+  planning:
+    description: "Task planning and decomposition"
+    required_for: ["planning", "task_breakdown"]
+  
+  long_context:
+    description: "Large context window handling"
+    required_for: ["large_file_analysis", "full_repo_context"]
+  
+  file_read:
+    description: "Read files from filesystem"
+    required_for: ["exploration", "code_review", "analysis"]
+  
+  file_write:
+    description: "Write files to filesystem"
+    required_for: ["implementation", "file_creation", "modification"]
+  
+  shell:
+    description: "Execute shell commands"
+    required_for: ["build", "test", "git", "system_operations"]
+  
+  git:
+    description: "Git operations"
+    required_for: ["version_control", "diff", "commit"]
+  
+  testing:
+    description: "Run and write tests"
+    required_for: ["verification", "test_driven_development"]
+  
+  debugging:
+    description: "Debugging and troubleshooting"
+    required_for: ["bug_fix", "error_analysis"]
+  
+  web:
+    description: "Web search and fetch"
+    required_for: ["research", "documentation_lookup"]
+  
+  structured_output:
+    description: "Structured output formatting"
+    required_for: ["json_output", "api_integration"]
+  
+  large_context:
+    description: "Large context window (100k+ tokens)"
+    required_for: ["large_project_analysis", "multi_file_context"]
+  
+  fast_response:
+    description: "Fast token generation"
+    required_for: ["interactive", "quick_iterations"]
